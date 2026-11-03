@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Bucket: {{ bucket }}{% endblock %}
+{% block content %}
+<h2>Bucket: {{ bucket }}</h2>
+<table class="table table-striped mt-3">
+    <thead>
+        <tr>
+            <th>Key</th>
+            <th>Size</th>
+            <th>Last Modified</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for obj in objects %}
+        <tr>
+            <td><a href="{{ url_for('main.download_file', bucket_name=bucket, filename=obj.Key) }}">{{ obj.Key }}</a></td>
+            <td>{{ obj.Size }}</td>
+            <td>{{ obj.LastModified }}</td>
+        </tr>
+        {% endfor %}
+        {% if not objects %}
+        <tr>
+            <td colspan="3">No objects found</td>
+        </tr>
+        {% endif %}
+    </tbody>
+</table>
+<a href="{{ url_for('main.upload_file', bucket_name=bucket) }}" class="btn btn-primary mb-3">Upload File</a>
+{% endblock %}

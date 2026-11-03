@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# Docker
+docker-compose override? Actually just ignore build cache:
+.dockerignore
+
+# Test artefacts
+coverage/
+pytest--cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sensitive data
+.env
+
+# Playwright test artefacts (optional)
+playwright-report/
+tests/screenshots/
+tests/videos/
