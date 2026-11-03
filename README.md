@@ -26,7 +26,7 @@ The console provides:
 
 ```bash
 # 1️⃣ Build the single image
-docker build -t myorg/s3like-web:latest .
+docker build -t cosqnetwork/s3like:latest .
 
 # 2️⃣ Run it (point at your S3 service)
 docker run -d \
@@ -38,7 +38,7 @@ docker run -d \
   -e S3_ENDPOINT_URL=https://s3.amazonaws.com \
   -e S3_REGION=us-east-1 \
   -e S3_USE_SSL=True \
-  myorg/s3like-web:latest
+  cosqnetwork/s3like:latest
 ```
 
 The console will be reachable at `http://localhost:5000`.
@@ -55,7 +55,7 @@ docker run -d \
   -e S3_ENDPOINT_URL=http://host.docker.internal:5555 \
   -e AWS_ACCESS_KEY_ID=testing \
   -e AWS_SECRET_ACCESS_KEY=testing \
-  myorg/s3like-web:latest
+  cosqnetwork/s3like:latest
 ```
 
 ---
@@ -160,9 +160,9 @@ jobs:
       - name: Run Playwright UI tests
         run: npx playwright test
       - name: Build Docker image
-        run: docker build -t myorg/s3like-web:latest .
+        run: docker build -t cosqnetwork/s3like:latest .
       - name: Push Docker image
-        run: docker push myorg/s3like-web:latest
+        run: docker push cosqnetwork/s3like:latest
 ```
 
 ---
