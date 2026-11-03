@@ -1,0 +1,110 @@
+name: Release Docker Image
+
+on:
+  push:
+    branches: [ main ]
+  push:
+    branches: [ release/* ]
+  push:
+    tags: [ v* ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r test-requirements.txt
+
+      - name: Read current version
+        id: version
+        run: |
+          echo "VERSION=$(python -c 'import re; print(re.search(r"__version__ = [\"\"']([^\"\"']+)[\"\"'], open("app/version.py").read()).group(1))')" >> $GITHUB_OUTPUT
+
+      - name: Bump version (GitFlow logic)
+        if: github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          MAJOR=$(echo "${{ steps.version.outputs.VERSION }}" | cut -d. -f1)
+          MINOR=$(echo "${{ steps.version.outputs.VERSION }}" | cut -d. -f2)
+          PATCH=$(echo "${{ steps.version.outputs.VERSION }}" | cut -d. -f3)
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            PATCH=$((PATCH + 1))
+          elif ${{ github.ref_name }} == release/*; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            echo "::set-output name=VERSION::${{ steps.version.outputs.VERSION }}"
+            exit 0
+          fi
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "NEW_VERSION=${NEW_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Write new version to app/version.py
+        run: |
+          python -c "
+          import re
+          with open('app/version.py', 'r') as f: src = f.read()
+          src = re.sub(r'__version__ = [\"\"']([^\"\"']+)[\"\"']', f'__version__ = \"${{ steps.version.outputs.VERSION }}\"', src)
+          with open('app/version.py', 'w') as f: f.write(src)
+          "
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: cosqnetwork
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          docker build -t cosqnetwork/s3like:${VERSION} .
+          if [[ ${{ github.ref_name }} == 'main' || startsWith(github.ref, 'refs/tags/v') ]]; then
+            docker tag cosqnetwork/s3like:${VERSION} cosqnetwork/s3like:latest
+          fi
+
+      - name: Push Docker image
+        run: |
+          docker push cosqnetwork/s3like:${{ steps.version.outputs.VERSION }}
+          if [[ ${{ github.ref_name }} == 'main' || startsWith(github.ref, 'refs/tags/v') ]]; then
+            docker push cosqnetwork/s3like:latest
+          fi
+          if startsWith(github.ref, 'refs/tags/v'); then
+            docker push cosqnetwork/s3like:${github.ref_name}
+          fi
+
+      - name: Create Git tag (only on main)
+        if: github.ref_name == 'main'
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release ${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Add PR comment (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comments@v2
+        with:
+          header: 📦 Docker image released
+          footer: |
+            The image **cosqnetwork/s3like:${{ steps.version.outputs.VERSION }}** has been published to Docker Hub.
+            Pull it with:
+            ```
+            docker pull cosqnetwork/s3like:${{ steps.version.outputs.VERSION }}
+            ```
