@@ -1,5 +1,7 @@
 # s3like – Dockerized Flask S3‑Compatible Console
 
+[![GitHub](https://img.shields.io/badge/source‑cosq‑network/s3like-blue)](https://github.com/cosq-network/s3like)
+
 A minimal Flask web console that connects to **any** S3‑compatible storage service via `boto3`. All connection parameters are supplied through **environment variables**, so the same Docker image can talk to:
 
 * Local `moto` mock (for development & testing)
