@@ -18,7 +18,7 @@ test('console can upload and list a file', async ({ page }) => {
   const fileInput = page.locator('input[type="file"]');
   // Create a temporary file via playwright fixture approach; here we just set input files using a local path
   // For demo, assume 'upload_test.txt' exists in the test directory; playwright can accept a file path.
-  await fileInput.setInputFiles('upload_test.txt');
+  await fileInput.setInputFiles('tests/upload_test.txt');
 
   await page.click('button:has-text("Upload")');
   await expect(page.locator('text=upload_test.txt')).toBeVisible({ timeout: 5000 });

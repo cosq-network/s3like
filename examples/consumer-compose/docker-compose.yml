@@ -1,0 +1,47 @@
+services:
+  s3like:
+    image: ${S3LIKE_IMAGE:-s3like:dev}
+    build: ../..
+    ports:
+      - "${S3LIKE_API_PORT:-9000}:9000"
+      - "${S3LIKE_CONSOLE_PORT:-9001}:9001"
+    environment:
+      DATA_DIR: /data
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-dev-access}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-dev-secret}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-consumer-bucket}
+      S3_AUTO_CREATE_BUCKET: ${S3_AUTO_CREATE_BUCKET:-true}
+      S3_DEVELOPMENT_MODE: ${S3_DEVELOPMENT_MODE:-true}
+      S3_MAX_OBJECT_SIZE: ${S3_MAX_OBJECT_SIZE:-5368709120}
+      S3_MAX_REQUEST_SIZE: ${S3_MAX_REQUEST_SIZE:-5368709120}
+      S3_MULTIPART_RETENTION_HOURS: ${S3_MULTIPART_RETENTION_HOURS:-24}
+      CONSOLE_USERNAME: ${CONSOLE_USERNAME:-}
+      CONSOLE_PASSWORD: ${CONSOLE_PASSWORD:-}
+    volumes:
+      - s3like-data:/data
+    networks: [devnet]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; [urllib.request.urlopen(u, timeout=2).read() for u in ('http://127.0.0.1:9000/health/ready','http://127.0.0.1:9001/health/live')]" ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+  application:
+    build: ./application
+    environment:
+      S3_ENDPOINT_URL: http://s3like:9000
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-dev-access}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-dev-secret}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-consumer-bucket}
+    depends_on:
+      s3like:
+        condition: service_healthy
+    networks: [devnet]
+
+networks:
+  devnet:
+
+volumes:
+  s3like-data:

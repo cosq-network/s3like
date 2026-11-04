@@ -12,5 +12,5 @@ export default defineConfig({
     headless: process.env.CI === 'true',
     baseURL: 'http://localhost:5000',
   },
-  testMatch: ['**/*.spec.ts', '**/*.spec'],
+  testMatch: ['**/*.spec.ts', '**/*.spec', '**/*.test.ts'],
 });

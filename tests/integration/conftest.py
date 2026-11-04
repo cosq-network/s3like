@@ -1,28 +1,26 @@
 import pytest
-from moto import mock_aws
-import boto3
+import shutil
+from pathlib import Path
+from uuid import uuid4
 from app import create_app
-from app.config import Config
 
+@pytest.fixture
+def app(monkeypatch):
+    data_dir = Path.cwd() / ".test-data" / uuid4().hex
+    data_dir.mkdir(parents=True)
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("S3_BUCKET_NAME", "dev-bucket")
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://localhost:9000")
+    application = create_app()
+    monkeypatch.setattr("app.api.service.validate_with_error", lambda: (True, None))
+    application.testing = True
+    try:
+        yield application
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)
 
-@pytest.fixture(scope="function")
-def moto_s3():
-    with mock_aws():
-        # Create a fake bucket that the Flask app will use
-        s3 = boto3.client(
-            "s3",
-            region_name=Config.S3_REGION,
-            aws_access_key_id="testing",
-            aws_secret_access_key="testing",
-        )
-        s3.create_bucket(Bucket=Config.S3_BUCKET_NAME)
-        yield   # test body runs here
-        # bucket is automatically torn down after the yield
-
-
-@pytest.fixture(scope="function")
-def client(moto_s3):
-    app = create_app()
-    app.testing = True
-    with app.test_client() as client:
-        yield client
+@pytest.fixture
+async def client(app):
+    async with app.test_app():
+        async with app.test_client() as test_client:
+            yield test_client

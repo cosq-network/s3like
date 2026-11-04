@@ -1,110 +1,150 @@
-name: Release Docker Image
+name: Validate and publish Docker image
 
 on:
+  pull_request:
+    branches: [main]
   push:
-    branches: [ main ]
-  push:
-    branches: [ release/* ]
-  push:
-    tags: [ v* ]
+    branches: [main, 'release/**']
+    tags: ['v*.*.*']
+  workflow_dispatch:
 
 jobs:
-  build-and-push:
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
     permissions:
-      packages: write
       contents: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r test-requirements.txt
+          python -m pip install -r requirements.txt -r test-requirements.txt
 
-      - name: Read current version
-        id: version
-        run: |
-          echo "VERSION=$(python -c 'import re; print(re.search(r"__version__ = [\"\"']([^\"\"']+)[\"\"'], open("app/version.py").read()).group(1))')" >> $GITHUB_OUTPUT
+      - name: Compile Python sources
+        run: python -m compileall -q app
 
-      - name: Bump version (GitFlow logic)
-        if: github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/v')
+      - name: Run unit tests
+        run: python -m pytest tests/unit -q
+
+      - name: Run integration tests
+        run: python -m pytest tests/integration -q
+
+      - name: Validate root Compose file
+        run: docker compose config
+
+      - name: Validate consumer Compose file
+        working-directory: examples/consumer-compose
+        run: docker compose config
+
+      - name: Build Docker image
+        run: docker build --tag s3like:ci .
+
+      - name: Run Docker health smoke test
+        shell: bash
         run: |
-          MAJOR=$(echo "${{ steps.version.outputs.VERSION }}" | cut -d. -f1)
-          MINOR=$(echo "${{ steps.version.outputs.VERSION }}" | cut -d. -f2)
-          PATCH=$(echo "${{ steps.version.outputs.VERSION }}" | cut -d. -f3)
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            PATCH=$((PATCH + 1))
-          elif ${{ github.ref_name }} == release/*; then
-            MINOR=$((MINOR + 1))
-            PATCH=0
-          else
-            echo "::set-output name=VERSION::${{ steps.version.outputs.VERSION }}"
-            exit 0
+          set -euo pipefail
+          container="s3like-ci-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach --name "$container" \
+            --publish 19000:9000 --publish 19001:9001 \
+            s3like:ci >/dev/null
+
+          for _ in $(seq 1 60); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
+            case "$status" in
+              healthy) break ;;
+              unhealthy) docker logs "$container"; exit 1 ;;
+            esac
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+
+          test "$(docker inspect --format '{{json .Config.ExposedPorts}}' "$container")" = '{"9000/tcp":{},"9001/tcp":{}}'
+          test "$(docker inspect --format '{{range .Mounts}}{{.Destination}}{{end}}' "$container")" = '/data'
+          test "$(docker inspect --format '{{json .Config.Cmd}}' "$container")" = '["python","-m","app.container"]'
+          docker inspect "$container" | grep --fixed-strings --quiet 'health/ready'
+          docker inspect "$container" | grep --fixed-strings --quiet 'health/live'
+          curl --fail --silent http://127.0.0.1:19000/health/ready >/dev/null
+          curl --fail --silent http://127.0.0.1:19001/health/live >/dev/null
+
+  publish:
+    name: Publish Docker Hub image
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read and verify release version
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match vX.Y.Z: $RELEASE_TAG" >&2
+            exit 1
           fi
-          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          echo "NEW_VERSION=${NEW_VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Write new version to app/version.py
-        run: |
-          python -c "
-          import re
-          with open('app/version.py', 'r') as f: src = f.read()
-          src = re.sub(r'__version__ = [\"\"']([^\"\"']+)[\"\"']', f'__version__ = \"${{ steps.version.outputs.VERSION }}\"', src)
-          with open('app/version.py', 'w') as f: f.write(src)
-          "
+          tag_version="${RELEASE_TAG#v}"
+          app_version="$(python -c 'import ast; tree=ast.parse(open("app/version.py").read()); print(ast.literal_eval(next(n.value for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__version__" for t in n.targets))))')"
+          if [[ "$tag_version" != "$app_version" ]]; then
+            echo "Tag version $tag_version does not match app/version.py version $app_version" >&2
+            exit 1
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: cosqnetwork
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build Docker image
-        run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
-          docker build -t cosqnetwork/s3like:${VERSION} .
-          if [[ ${{ github.ref_name }} == 'main' || startsWith(github.ref, 'refs/tags/v') ]]; then
-            docker tag cosqnetwork/s3like:${VERSION} cosqnetwork/s3like:latest
-          fi
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Push Docker image
-        run: |
-          docker push cosqnetwork/s3like:${{ steps.version.outputs.VERSION }}
-          if [[ ${{ github.ref_name }} == 'main' || startsWith(github.ref, 'refs/tags/v') ]]; then
-            docker push cosqnetwork/s3like:latest
-          fi
-          if startsWith(github.ref, 'refs/tags/v'); then
-            docker push cosqnetwork/s3like:${github.ref_name}
-          fi
-
-      - name: Create Git tag (only on main)
-        if: github.ref_name == 'main'
-        run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release ${VERSION}"
-          git push origin "v${VERSION}"
-
-      - name: Add PR comment (if applicable)
-        if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comments@v2
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          header: 📦 Docker image released
-          footer: |
-            The image **cosqnetwork/s3like:${{ steps.version.outputs.VERSION }}** has been published to Docker Hub.
-            Pull it with:
-            ```
-            docker pull cosqnetwork/s3like:${{ steps.version.outputs.VERSION }}
-            ```
+          images: cosqnetwork/s3like
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp || '' }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

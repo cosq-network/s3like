@@ -1,75 +1,51 @@
-import pytest
 import io
-from app import create_app
+import pytest
 from app.config import Config
+from werkzeug.datastructures import FileStorage
 
-
-@pytest.fixture(scope="function")
-def client():
-    app = create_app()
-    app.testing = True
-    with app.test_client() as client:
-        yield client
-
-
-def test_upload_download_presigned(client):
-    """Upload a file, list it, and get a presigned download URL."""
-    data = b"Hello, S3 compatible world!"
-    file_like = io.BytesIO(data)
-
-    # 1️⃣ Upload
-    resp = client.post(
-        f"/bucket/{Config.S3_BUCKET_NAME}/upload",
-        data={"file": (file_like, "test.txt")},
-        content_type="multipart/form-data",
-    )
-    assert resp.status_code == 302  # redirect after upload
-
-    # 2️⃣ List objects
-    resp = client.get("/")
-    assert resp.status_code == 200
-    assert "test.txt" in resp.get_data(as_text=True)
-
-    # 3️⃣ Get presigned download URL
-    dl_resp = client.get(f"/bucket/{Config.S3_BUCKET_NAME}/download/test.txt")
-    assert dl_resp.status_code == 200
-    json_data = dl_resp.get_json()
-    assert "download_url" in json_data
-
-
-def test_delete_file(client):
-    """Upload a file, then delete it and verify it's gone."""
-    data = b"Delete me!"
-    file_like = io.BytesIO(data)
-
-    # Upload
-    resp = client.post(
-        f"/bucket/{Config.S3_BUCKET_NAME}/upload",
-        data={"file": (file_like, "to_delete.txt")},
-        content_type="multipart/form-data",
-    )
+@pytest.mark.asyncio
+async def test_upload_download_presigned(client):
+    bucket = Config().S3_BUCKET_NAME
+    resp = await client.post(f"/bucket/{bucket}/upload", files={"file": FileStorage(stream=io.BytesIO(b"Hello, S3 compatible world!"), filename="test.txt")})
     assert resp.status_code == 302
+    resp = await client.get(f"/bucket/{bucket}")
+    assert resp.status_code == 200 and "test.txt" in await resp.get_data(as_text=True)
+    dl_resp = await client.get(f"/s3/{bucket}/test.txt/presigned")
+    assert dl_resp.status_code == 200 and "presigned_url" in await dl_resp.get_json()
 
-    # Verify it's in the list
-    resp = client.get("/")
+@pytest.mark.asyncio
+async def test_delete_file(client):
+    bucket = Config().S3_BUCKET_NAME
+    resp = await client.post(f"/bucket/{bucket}/upload", files={"file": FileStorage(stream=io.BytesIO(b"Delete me!"), filename="to_delete.txt")})
+    assert resp.status_code == 302
+    assert (await client.post(f"/bucket/{bucket}/delete/to_delete.txt")).status_code == 302
+    resp = await client.get(f"/bucket/{bucket}")
+    assert "to_delete.txt" not in await resp.get_data(as_text=True)
+
+@pytest.mark.asyncio
+async def test_health_endpoint(client):
+    resp = await client.get("/health")
     assert resp.status_code == 200
-    assert "to_delete.txt" in resp.get_data(as_text=True)
+    assert await resp.get_json() == {"status": "ok"}
 
-    # Delete
-    del_resp = client.post(
-        f"/bucket/{Config.S3_BUCKET_NAME}/delete/to_delete.txt",
-        follow_redirects=False,
-    )
-    assert del_resp.status_code in (302, 200)  # redirect or ok
+@pytest.mark.asyncio
+async def test_s3_bucket_and_object_flow(client):
+    bucket = "integration-bucket"
+    assert (await client.put(f"/{bucket}")).status_code == 200
+    put = await client.put(f"/{bucket}/hello.txt", data=b"hello", headers={"Content-Type": "text/plain", "x-amz-meta-owner": "test"})
+    assert put.status_code == 200
+    get = await client.get(f"/{bucket}/hello.txt", headers={"Range": "bytes=1-3"})
+    assert get.status_code == 206 and await get.get_data() == b"ell"
+    assert get.headers["Content-Range"] == "bytes 1-3/5"
+    head = await client.head(f"/{bucket}/hello.txt")
+    assert head.headers["Content-Type"] == "text/plain" and head.headers["x-amz-meta-owner"] == "test"
+    assert (await client.delete(f"/{bucket}/hello.txt")).status_code == 204
+    assert (await client.delete(f"/{bucket}")).status_code == 204
 
-    # Verify it's gone
-    resp = client.get("/")
-    assert resp.status_code == 200
-    assert "to_delete.txt" not in resp.get_data(as_text=True)
-
-
-def test_health_endpoint(client):
-    """The /health endpoint should return 200 OK."""
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.get_json() == {"status": "ok"}
+@pytest.mark.asyncio
+async def test_health_readiness_and_missing_bucket(client):
+    assert (await client.get("/health/live")).status_code == 200
+    assert (await client.get("/health/ready")).status_code == 200
+    response = await client.get("/missing-bucket/nope")
+    assert response.status_code == 404
+    assert "NoSuchBucket" in await response.get_data(as_text=True)

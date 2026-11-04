@@ -1,172 +1,101 @@
-# s3like – Dockerized Flask S3‑Compatible Console
+# S3Like
 
-[![GitHub](https://img.shields.io/badge/source‑cosq‑network/s3like-blue)](https://github.com/cosq-network/s3like)
+S3Like is distributed as one Docker image and runs as one container exposing
+both the S3 API and web console. It is designed for local development and
+integration testing, not distributed production storage.
 
-A minimal Flask web console that connects to **any** S3‑compatible storage service via `boto3`. All connection parameters are supplied through **environment variables**, so the same Docker image can talk to:
-
-* Local `moto` mock (for development & testing)
-* Local MinIO or other self‑hosted S3 API
-* Amazon S3, Google Cloud Storage, Wasabi, Ceph, etc.
-
-The console provides:
-
-| Feature | URL |
-|---|---|
-| List objects | `GET /` |
-| List a specific bucket | `GET /bucket/<name>` |
-| Upload a file | `POST /bucket/<name>/upload` |
-| Presigned download URL | `GET /bucket/<name>/download/<key>` |
-| Delete an object | `POST /bucket/<name>/delete/<key>` |
-| Health check | `GET /health` |
-| Optional Basic Auth | set `CONSOLE_USERNAME` / `CONSOLE_PASSWORD` |
-
----
-
-## Quick Start (Docker)
+## Quick start
 
 ```bash
-# 1️⃣ Build the single image
-docker build -t cosqnetwork/s3like:latest .
-
-# 2️⃣ Run it (point at your S3 service)
-docker run -d \
-  -p 5000:5000 \
-  -e FLASK_ENV=production \
-  -e SECRET_KEY=super‑secret‑key‑change‑me \
-  -e AWS_ACCESS_KEY_ID=myKey \
-  -e AWS_SECRET_ACCESS_KEY=mySecret \
-  -e S3_ENDPOINT_URL=https://s3.amazonaws.com \
-  -e S3_REGION=us-east-1 \
-  -e S3_USE_SSL=True \
-  cosqnetwork/s3like:latest
+docker compose up --build
 ```
 
-The console will be reachable at `http://localhost:5000`.
+Copy `.env.example` to `.env` to keep overrides in a local file. The host
+endpoints default to `http://localhost:${S3LIKE_API_PORT:-9000}` (S3 API) and
+`http://localhost:${S3LIKE_CONSOLE_PORT:-9001}` (console); set
+`S3LIKE_API_PORT` and `S3LIKE_CONSOLE_PORT` to change only the host ports.
+Container-to-container clients use `http://s3like:9000`.
 
-### Using a local `moto` mock (development / testing)
+The local-only development defaults are credentials `dev-access` /
+`dev-secret`, region `us-east-1`, and auto-created bucket `dev-bucket`.
+To use a prebuilt image, set `S3LIKE_IMAGE` (for example,
+`S3LIKE_IMAGE=cosqnetwork/s3like:0.2.0`) and run `docker compose up`.
 
-```bash
-# Start moto on port 5555
-moto.server --port 5555
+Other Compose services connect to `http://s3like:9000`, not localhost. The
+complete external integration example is in [examples/consumer-compose](examples/consumer-compose).
 
-# Run the container pointing at moto
-docker run -d \
-  -p 5000:5000 \
-  -e S3_ENDPOINT_URL=http://host.docker.internal:5555 \
-  -e AWS_ACCESS_KEY_ID=testing \
-  -e AWS_SECRET_ACCESS_KEY=testing \
-  cosqnetwork/s3like:latest
-```
+The named `s3like-data` volume persists metadata and objects across
+`docker compose down`. To intentionally reset development state, run
+`docker compose down -v`.
 
----
+## Releases
+
+`app/version.py` is the release version source. To prepare a release, update
+`__version__`, commit that change, and push a matching strict version tag such
+as `v0.2.0`. The tag triggers validation and publishes both
+`cosqnetwork/s3like:0.2.0` and `cosqnetwork/s3like:latest` to Docker Hub.
+
+Only version-tagged releases update `latest`. Ordinary pushes to `main` and
+`release/**` run validation but do not publish images. The repository's Actions
+secrets must include `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ## Configuration
 
-All behaviour is driven by environment variables (see `app/config.py`). Defaults are included so the image runs out‑of‑the‑box.
+The `.env.example` template documents the complete Compose configuration:
+`S3LIKE_IMAGE` (`s3like:dev`), `S3LIKE_API_PORT` (`9000`),
+`S3LIKE_CONSOLE_PORT` (`9001`), `DATA_DIR` (`/data`),
+`S3_ACCESS_KEY_ID` (`dev-access`), `S3_SECRET_ACCESS_KEY` (`dev-secret`),
+`S3_REGION` (`us-east-1`), `S3_BUCKET_NAME` (`dev-bucket`),
+`S3_AUTO_CREATE_BUCKET` (`true`), `S3_DEVELOPMENT_MODE` (`true`),
+`S3_MAX_OBJECT_SIZE` and `S3_MAX_REQUEST_SIZE` (`5368709120` each),
+`S3_MULTIPART_RETENTION_HOURS` (`24`), and blank `CONSOLE_USERNAME` and
+`CONSOLE_PASSWORD`. `DATA_DIR=/data` is the fixed container path backed by
+the named volume. Explicit `S3_*` values take
+precedence over MinIO-compatible aliases and AWS-compatible aliases. Production
+mode rejects known development credentials.
 
-| Variable | Default | Description |
-|---|---|---|
-| `FLASK_ENV` | `development` | Flask environment |
-| `SECRET_KEY` | `super-secret-key-change-me` | Sign sessions – **change for production** |
-| `AWS_ACCESS_KEY_ID` | `testkey` | Access key the S3 service accepts |
-| `AWS_SECRET_ACCESS_KEY` | `testsecret` | Secret key the S3 service accepts |
-| `S3_ENDPOINT_URL` | `http://localhost:5555` | The S3‑compatible service URL |
-| `S3_REGION` | `us-east-1` | Region name |
-| `S3_USE_SSL` | `False` | Set `True` if the endpoint uses HTTPS |
-| `CONSOLE_USERNAME` | `` (empty) | If set, enables HTTP Basic Auth |
-| `CONSOLE_PASSWORD` | `` (empty) | Password for the above user |
-| `S3_BUCKET_NAME` | `my-bucket` | Default bucket name (overridable in UI) |
+Set both console credentials to enable Basic Auth. Health endpoints are
+`/health/live`, `/health/ready`, `/minio/health/live`, and
+`/minio/health/ready`; the container health check requires API readiness and
+console liveness.
 
----
+## AWS clients
 
-## Running the Test Suite
-
-### Unit tests (no Docker)
-
-```bash
-pytest -m unit
-```
-
-Verifies that `Config` uses the correct defaults.
-
-### Integration tests (uses `moto`)
+Use path-style addressing for local endpoints:
 
 ```bash
-pytest -m integration
+export AWS_ACCESS_KEY_ID=dev-access AWS_SECRET_ACCESS_KEY=dev-secret AWS_DEFAULT_REGION=us-east-1
+aws --endpoint-url http://localhost:9000 s3 ls
+aws --endpoint-url http://localhost:9000 s3 cp ./file.bin s3://dev-bucket/file.bin
+aws --endpoint-url http://localhost:9000 s3 cp s3://dev-bucket/file.bin ./download.bin
 ```
 
-Spins up an in‑process `moto` S3 mock and runs the CRUD flow (upload → list → presigned download → delete → health).
-
-### Playwright UI tests
-
-```bash
-cd playwright_tests
-npx playwright test
+```python
+import boto3
+from botocore.config import Config
+s3 = boto3.client("s3", endpoint_url="http://localhost:9000",
+    aws_access_key_id="dev-access", aws_secret_access_key="dev-secret",
+    region_name="us-east-1", config=Config(s3={"addressing_style": "path"}))
+s3.put_object(Bucket="dev-bucket", Key="hello.txt", Body=b"hello", ContentType="text/plain")
+url = s3.generate_presigned_url("get_object", Params={"Bucket":"dev-bucket", "Key":"hello.txt"}, ExpiresIn=300)
 ```
 
-Opens the console in a headless browser, optionally logs in via Basic Auth, uploads a file, and verifies it appears in the bucket list.
+Bucket/object CRUD, metadata, content types, range and conditional reads,
+copy/delete, SigV4, presigned URLs, and multipart upload/list/complete/abort
+are supported. Uploads are bounded by the configured request and object size
+limits; temporary files are cleaned on failure and expired multipart uploads
+are cleaned on startup.
 
----
+This is not full AWS S3 or MinIO compatibility. MinIO's internal disk format,
+admin API, versioning, lifecycle, replication, object locking, notifications,
+and distributed erasure coding are unsupported. Migrate through S3 APIs such as
+`aws s3 sync`.
 
-## Directory Layout
+## Troubleshooting
 
-```
-s3like/
-├── Dockerfile                # builds the Flask image
-├── docker-compose.yml        # optional – only the Flask service
-├── requirements.txt          # runtime deps (Flask, boto3, …)
-├── test-requirements.txt     # test‑only deps (moto, pytest, playwright)
-├── app/
-│   ├── __init__.py          # Flask app factory + optional Basic Auth
-│   ├── config.py            # env‑var driven config
-│   ├── app.py               # routes + shared boto3 client
-│   └── templates/           # Bootstrap HTML templates
-├── tests/
-│   ├── unit/                # pure unit tests
-│   └── integration/         # tests using moto mock
-└── playwright_tests/
-    ├── playwright.config.mjs
-    └── tests/
-        └── test_console.test.ts   # Playwright UI test
-```
-
----
-
-## CI / CD (example)
-
-A minimal GitHub Actions workflow could:
-
-```yaml
-name: CI
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r test-requirements.txt
-          npx playwright install
-      - name: Run unit & integration tests
-        run: pytest -vv
-      - name: Run Playwright UI tests
-        run: npx playwright test
-      - name: Build Docker image
-        run: docker build -t cosqnetwork/s3like:latest .
-      - name: Push Docker image
-        run: docker push cosqnetwork/s3like:latest
-```
-
----
-
-## License
-
-MIT (or whatever you choose – the stack is all open‑source).
+- Port conflict: set `S3LIKE_API_PORT` or `S3LIKE_CONSOLE_PORT` in `.env`.
+- Unhealthy startup: inspect `docker compose logs s3like`; API readiness includes
+  SQLite initialization and bucket provisioning.
+- Credential mismatch: configure access and secret values together.
+- Stale state: use `docker compose down -v` only when deleting the named volume
+  is intended.
