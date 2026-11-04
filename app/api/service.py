@@ -4,6 +4,7 @@ from urllib.parse import unquote
 from quart import Blueprint, request, Response, jsonify, g
 from .auth import validate_with_error
 from .xml import response,error
+from .chunked import AwsChunkedDecoder,ChunkedDecodeError
 from app.storage import StorageService,StorageError
 
 BUCKET=re.compile(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
@@ -18,16 +19,31 @@ def _range(value,size):
         if start<0 or end<start or start>=size: return None
         return start,min(end,size-1)
     except ValueError: return None
+def _streaming():
+    # AWS SDKs send aws-chunked bodies (signed chunks and/or a checksum trailer) for PutObject and UploadPart.
+    return request.headers.get('x-amz-content-sha256','').startswith('STREAMING-') or 'aws-chunked' in request.headers.get('Content-Encoding','').lower()
 async def _temp(storage, limit=None):
     limit = limit or storage.max_request_size
+    decoder = AwsChunkedDecoder() if _streaming() else None
     length = request.content_length
+    declared = request.headers.get('x-amz-decoded-content-length')
+    if decoder and declared is not None:
+        try: length = int(declared)
+        except ValueError: raise StorageError('InvalidArgument','Invalid x-amz-decoded-content-length.',400)
     if length is not None and length > limit: raise StorageError('EntityTooLarge','Your proposed upload exceeds the maximum allowed object size.',413)
     p=storage.files.new_temp(); total=0
     try:
         async for chunk in request.body:
+            if decoder:
+                try: chunk = decoder.feed(chunk)
+                except ChunkedDecodeError as exc: raise StorageError('InvalidRequest',str(exc),400)
             total += len(chunk)
             if total > limit: raise StorageError('EntityTooLarge','Your proposed upload exceeds the maximum allowed object size.',413)
             with p.open('ab') as f: f.write(chunk)
+        if decoder:
+            try: decoder.close()
+            except ChunkedDecodeError as exc: raise StorageError('IncompleteBody',str(exc),400)
+            if declared is not None and total != length: raise StorageError('IncompleteBody','You did not provide the number of bytes specified by the x-amz-decoded-content-length header.',400)
         return p
     except Exception:
         storage.files.remove(p); raise
