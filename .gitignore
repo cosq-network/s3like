@@ -12,12 +12,15 @@ htmlcov/
 .mypy_cache/
 
 # Docker
-docker-compose override? Actually just ignore build cache:
+# docker-compose override? Actually just ignore build cache:
 .dockerignore
 
 # Test artefacts
 coverage/
 pytest--cache/
+pytest-cache/
+pytest-temp/
+pytest_temp/
 
 # IDE
 .vscode/
@@ -33,3 +36,14 @@ pytest--cache/
 playwright-report/
 tests/screenshots/
 tests/videos/
+
+# Runtime data & local databases
+data/
+.compat-data/
+.test-data/
+test_integration.db/
+*.db
+*.sqlite3
+
+# Linter caches
+.ruff_cache/
